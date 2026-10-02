@@ -1,10 +1,12 @@
 import socket
 import threading
+from framing import send_frame, receive_frame
 
 HOST = "127.0.0.1"
 PORT = 57545
 
 
+# Creating the Socket
 def create_socket():
     print("Creating Server side socket.........")
 
@@ -17,6 +19,7 @@ def create_socket():
     return server_socket
 
 
+# Accepting the Connection from client
 def accept_connection(server_socket):
     server_socket.listen(1)
 
@@ -29,19 +32,20 @@ def accept_connection(server_socket):
     return client_conn
 
 
+# Logic for Receiving Messages
 def receive_messages(client_conn, stop_event):
     while not stop_event.is_set():
         try:
-            message = client_conn.recv(1024)
+            frame = receive_frame(client_conn)
 
-            if not message:
+            if frame is None:
                 print("\nConnection closed by client.")
                 stop_event.set()
                 break
 
-            message = message.decode("utf-8")
+            frame_type, message = frame
 
-            if message.lower() == "/quit":
+            if frame_type == 2:
                 print("\nFriend left the chat.")
                 stop_event.set()
                 break
@@ -58,6 +62,7 @@ def receive_messages(client_conn, stop_event):
             break
 
 
+# Logic for Sending messages
 def send_messages(client_conn, stop_event):
     while not stop_event.is_set():
         try:
@@ -68,15 +73,18 @@ def send_messages(client_conn, stop_event):
                 stop_event.set()
 
                 try:
-                    client_conn.sendall(message.encode("utf-8"))
-                    client_conn.shutdown(socket.SHUT_RDWR)
+                    send_frame(client_conn, message)
+                    client_conn.shutdown(
+                        socket.SHUT_RDWR
+                    )  # Stop Both RD(receiving) and WR(Sending).
                 except OSError:
                     pass
 
                 break
 
-            client_conn.sendall(message.encode("utf-8"))
+            send_frame(client_conn, message)
 
+        # handle Ctrl  + C and EOF error
         except (EOFError, KeyboardInterrupt):
             stop_event.set()
 
@@ -107,11 +115,13 @@ def main():
         print("\nChat started!")
         print("Type /quit to leave.\n")
 
+        # Event for inter thread communication/Synchronization
         stop_event = threading.Event()
 
+        # Receive thread for parallel execution of send(main thread) and receive
         receive_thread = threading.Thread(
             target=receive_messages, args=(client_conn, stop_event), daemon=True
-        )
+        )  # daemon = True basically stops this thread if main thread is stopped
 
         receive_thread.start()
 
