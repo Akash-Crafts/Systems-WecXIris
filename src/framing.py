@@ -2,13 +2,8 @@ import socket
 import struct
 
 
-def send_frame(sock, payload):
-    if payload.lower() == "/quit":
-        frame_type = 2  # indication to quit
-    else:
-        frame_type = 1  # normal chat message
+def send_frame(sock, frame_type, payload_bytes):
 
-    payload_bytes = payload.encode("utf-8")
     length = len(payload_bytes)  # length of the message in bytes
 
     header = struct.pack(
@@ -50,6 +45,4 @@ def receive_frame(sock):
     if payload_bytes is None:
         return None
 
-    payload = payload_bytes.decode("utf-8")
-
-    return frame_type, payload
+    return frame_type, payload_bytes

@@ -1,6 +1,22 @@
 import socket
 import threading
 from framing import send_frame, receive_frame
+from crypto import (
+    generate_private_key,
+    generate_public_key,
+    derive_shared_secret,
+    serialize_key,
+    deserialize_key,
+)
+
+from enum import IntEnum
+
+
+class FrameType(IntEnum):
+    CHAT = 1
+    ECDH = 2
+    QUIT = 3
+
 
 HOST = "127.0.0.1"
 PORT = 57545
@@ -20,6 +36,23 @@ def connect_to_server(client_socket):
     print(f"Connected to {HOST}:{PORT}")
 
 
+# ECDH handshake
+def establish_ECDH_handshake(client_socket):
+    print("Generating ECDH Keys.......")
+    my_private_key = generate_private_key()
+    my_public_key = generate_public_key(my_private_key)
+
+    print("Sending DH public key......")
+    send_frame(client_socket, FrameType.ECDH, serialize_key(my_public_key))
+
+    print("Receiving server DH public key......")
+    frame_type, peer_public_key_bytes = receive_frame(client_socket)
+    peer_public_key = deserialize_key(peer_public_key_bytes)
+
+    print("Shared secret derived.")
+    return derive_shared_secret(my_private_key, peer_public_key)
+
+
 # Logic for Receiving Messages
 def receive_messages(client_socket, stop_event):
     while not stop_event.is_set():
@@ -32,12 +65,13 @@ def receive_messages(client_socket, stop_event):
                 break
 
             frame_type, message = frame
-            if frame_type == 2:
+
+            if frame_type == FrameType.QUIT:
                 print("\nFriend left the chat.")
                 stop_event.set()
                 break
 
-            print(f"Friend: {message}")
+            print(f"Friend: {message.decode('utf-8')}")
 
         except (ConnectionResetError, BrokenPipeError, OSError):
             stop_event.set()
@@ -60,7 +94,7 @@ def send_messages(client_socket, stop_event):
                 stop_event.set()
 
                 try:
-                    send_frame(client_socket, message)
+                    send_frame(client_socket, FrameType.QUIT, message.encode("utf-8"))
                     client_socket.shutdown(
                         socket.SHUT_RDWR
                     )  # Stop Both RD(receiving) and WR(Sending).
@@ -69,7 +103,7 @@ def send_messages(client_socket, stop_event):
 
                 break
 
-            send_frame(client_socket, message)
+            send_frame(client_socket, FrameType.CHAT, message.encode("utf-8"))
 
         except (EOFError, KeyboardInterrupt):
             stop_event.set()
@@ -96,6 +130,10 @@ def main():
 
     try:
         connect_to_server(client_socket)
+
+        # Establish Same Secret Key
+        shared_secret = establish_ECDH_handshake(client_socket)
+        print(f"Shared Secret : {shared_secret.hex()}")
 
         print("\nChat started!")
         print("Type /quit to leave.\n")
