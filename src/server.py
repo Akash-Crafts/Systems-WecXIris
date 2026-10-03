@@ -1,21 +1,20 @@
 import socket
 import threading
 from framing import send_frame, receive_frame
-from crypto import (
-    generate_private_key,
-    generate_public_key,
-    derive_shared_secret,
-    serialize_key,
-    deserialize_key,
-)
+import crypto
 
 from enum import IntEnum
 
 
 class FrameType(IntEnum):
     CHAT = 1
-    ECDH = 2
+    HANDSHAKE = 2
     QUIT = 3
+
+
+class info:
+    client_to_server = b"client-to-server"
+    server_to_client = b"server-to-client"
 
 
 HOST = "127.0.0.1"
@@ -48,21 +47,35 @@ def accept_connection(server_socket):
     return client_conn
 
 
-# ECDH handshake
-def establish_ECDH_handshake(client_conn):
+# Handshake
+def establish_handshake(client_conn):
     print("Generating ECDH Keys.......")
-    my_private_key = generate_private_key()
-    my_public_key = generate_public_key(my_private_key)
+    my_private_key = crypto.generate_private_key()
+    my_public_key = crypto.generate_public_key(my_private_key)
 
     print("Receiving client DH public key......")
     frame_type, peer_public_key_bytes = receive_frame(client_conn)
-    peer_public_key = deserialize_key(peer_public_key_bytes)
+    peer_public_key = crypto.deserialize_key(peer_public_key_bytes)
 
     print("Sending DH public key......")
-    send_frame(client_conn, FrameType.ECDH, serialize_key(my_public_key))
+    send_frame(client_conn, FrameType.HANDSHAKE, crypto.serialize_key(my_public_key))
 
     print("Shared secret derived.")
-    return derive_shared_secret(my_private_key, peer_public_key)
+    shared_secret = crypto.derive_shared_secret(my_private_key, peer_public_key)
+
+    frame_type, salt = receive_frame(client_conn)
+    print("Salt Received.")
+
+    print("Generating Session_key....")
+    session_key_s2c = crypto.derive_session_key(
+        salt, shared_secret, info.server_to_client
+    )
+    session_key_c2s = crypto.derive_session_key(
+        salt, shared_secret, info.client_to_server
+    )
+
+    print("Done.")
+    return session_key_c2s, session_key_s2c
 
 
 # Logic for Receiving Messages
@@ -146,9 +159,8 @@ def main():
         client_conn = accept_connection(server_socket)
 
         # Establish Same Secret Key
-        shared_secret = establish_ECDH_handshake(client_conn)
+        shared_secret = establish_handshake(client_conn)
 
-        print(f"Shared Secret : {shared_secret.hex()}")
         print("\nChat started!")
         print("Type /quit to leave.\n")
 
