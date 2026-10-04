@@ -2,20 +2,7 @@ import socket
 import threading
 from framing import send_frame, receive_frame
 import crypto
-
-from enum import IntEnum
-
-
-class FrameType(IntEnum):
-    CHAT = 1
-    HANDSHAKE = 2
-    QUIT = 3
-
-
-class info:
-    client_to_server = b"client-to-server"
-    server_to_client = b"server-to-client"
-
+from protocol import FrameType, info
 
 HOST = "127.0.0.1"
 PORT = 57545
@@ -48,13 +35,39 @@ def accept_connection(server_socket):
 
 
 # Handshake
-def establish_handshake(client_conn):
+
+
+# Key Derivation
+def derive_keys(salt, shared_secret):
+
+    print("Generating Session_keys....")
+    s2ce = crypto.derive_session_key(salt, shared_secret, info.server_to_client_encr)
+    c2se = crypto.derive_session_key(salt, shared_secret, info.client_to_server_encr)
+
+    s2cm = crypto.derive_session_key(salt, shared_secret, info.server_to_client_mac)
+    c2sm = crypto.derive_session_key(salt, shared_secret, info.client_to_server_mac)
+
+    return s2ce, c2se, s2cm, c2sm
+
+
+def establish_handshake(client_conn, stop_event):
     print("Generating ECDH Keys.......")
     my_private_key = crypto.generate_private_key()
     my_public_key = crypto.generate_public_key(my_private_key)
 
     print("Receiving client DH public key......")
-    frame_type, peer_public_key_bytes = receive_frame(client_conn)
+
+    frame = receive_frame(client_conn)
+
+    if frame is None:
+        stop_event.set()
+        return False
+
+    frame_type, peer_public_key_bytes = frame
+
+    if frame_type != FrameType.HANDSHAKE:
+        stop_event.set()
+        return False
     peer_public_key = crypto.deserialize_key(peer_public_key_bytes)
 
     print("Sending DH public key......")
@@ -63,19 +76,51 @@ def establish_handshake(client_conn):
     print("Shared secret derived.")
     shared_secret = crypto.derive_shared_secret(my_private_key, peer_public_key)
 
-    frame_type, salt = receive_frame(client_conn)
+    frame = receive_frame(client_conn)
+
+    if frame is None:
+        stop_event.set()
+        return False
+
+    frame_type, salt = frame
+
+    if frame_type != FrameType.HANDSHAKE or len(salt) != 32:
+        stop_event.set()
+        return False
+
     print("Salt Received.")
 
-    print("Generating Session_key....")
-    session_key_s2c = crypto.derive_session_key(
-        salt, shared_secret, info.server_to_client
-    )
-    session_key_c2s = crypto.derive_session_key(
-        salt, shared_secret, info.client_to_server
+    S2C_ENC_KEY, C2S_ENC_KEY, S2C_MAC_KEY, C2S_MAC_KEY = derive_keys(
+        salt, shared_secret
     )
 
-    print("Done.")
-    return session_key_c2s, session_key_s2c
+    print("Confirming Valid HANDSHAKE.........")
+    transcript = peer_public_key_bytes + crypto.serialize_key(my_public_key) + salt
+    expected_mac_C2S = crypto.compute_hmac(C2S_MAC_KEY, transcript)
+
+    frame = receive_frame(client_conn)
+
+    if frame is None:
+        stop_event.set()
+        return False
+
+    frame_type, received_hmac_C2S = frame
+
+    if frame_type == FrameType.HANDSHAKE_CONFIRM and crypto.compare_hmac(
+        received_hmac_C2S, expected_mac_C2S
+    ):
+        computed_hmac_S2C = crypto.compute_hmac(S2C_MAC_KEY, transcript)
+        send_frame(client_conn, FrameType.HANDSHAKE_CONFIRM, computed_hmac_S2C)
+
+        print("Client MAC keys  confirmed.")
+
+    else:
+        print("Error in confirming valid Handshake...")
+        print("Aborting Connection.....")
+        send_frame(client_conn, FrameType.QUIT, b"/quit")
+        stop_event.set()
+
+    return not stop_event.is_set()
 
 
 # Logic for Receiving Messages
@@ -158,14 +203,23 @@ def main():
     try:
         client_conn = accept_connection(server_socket)
 
+        # Event for inter thread communication/Synchronization
+        stop_event = threading.Event()
+
         # Establish Same Secret Key
-        shared_secret = establish_handshake(client_conn)
+        try:
+            status = establish_handshake(client_conn, stop_event)
+        except:
+            print("Error in confirming valid Handshake...")
+            print("Aborting Connection.....")
+            stop_event.set()
+            status = False
+
+        if not status:
+            return
 
         print("\nChat started!")
         print("Type /quit to leave.\n")
-
-        # Event for inter thread communication/Synchronization
-        stop_event = threading.Event()
 
         # Receive thread for parallel execution of send(main thread) and receive
         receive_thread = threading.Thread(
