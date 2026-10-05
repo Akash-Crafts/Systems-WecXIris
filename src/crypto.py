@@ -4,10 +4,17 @@ import os
 
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF, HKDFExpand
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.exceptions import InvalidTag
 import hmac as std_hmac
+
+from protocol import info
 
 # A curve G y^2 = x^3 + ax + b
 CURVE = ec.SECP256R1()
+
+# nonce - 12 bytes
+NONCE_SIZE = 12
 
 
 # Salt for HMAC(salt, IKM)
@@ -36,6 +43,19 @@ def derive_shared_secret(private_key, peer_public_key):
     )  # shared_secret is in bytes
 
     return shared_secret
+
+
+# Key Derivation
+def derive_keys(salt, shared_secret):
+
+    print("Generating Session_keys....")
+    s2ce = derive_session_key(salt, shared_secret, info.server_to_client_encr)
+    c2se = derive_session_key(salt, shared_secret, info.client_to_server_encr)
+
+    s2cm = derive_session_key(salt, shared_secret, info.server_to_client_mac)
+    c2sm = derive_session_key(salt, shared_secret, info.client_to_server_mac)
+
+    return s2ce, c2se, s2cm, c2sm
 
 
 def derive_session_key(salt, shared_secret, info):
@@ -79,3 +99,29 @@ def serialize_key(key):
 # Convert Binary(Serialize) to ECDh Object
 def deserialize_key(data):
     return ec.EllipticCurvePublicKey.from_encoded_point(CURVE, data)
+
+
+# Logic for Encrypting Chat messages
+def encrypt_message(KEY, plain_text, aad):
+
+    nonce = os.urandom(NONCE_SIZE)
+    aesgcm = AESGCM(KEY)
+
+    ciphertext_and_tag = aesgcm.encrypt(nonce, plain_text, aad)
+
+    return nonce + ciphertext_and_tag
+
+
+# Logic for Decrypting Chat messages
+def decrypt_message(KEY, encrypted_payload, aad):
+    if (
+        len(encrypted_payload) < NONCE_SIZE + 16
+    ):  # minimum is 12 byte nonce + 16 byte authentication tag
+        raise ValueError("Encrypted Payload is too short")
+
+    nonce = encrypted_payload[:NONCE_SIZE]
+    ciphertext_and_tag = encrypted_payload[NONCE_SIZE:]
+
+    aesgcm = AESGCM(KEY)
+
+    return aesgcm.decrypt(nonce, ciphertext_and_tag, aad)

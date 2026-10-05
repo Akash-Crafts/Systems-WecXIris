@@ -3,6 +3,8 @@ import threading
 from framing import send_frame, receive_frame
 import crypto
 from protocol import FrameType, info
+import struct
+from cryptography.exceptions import InvalidTag
 
 HOST = "127.0.0.1"
 PORT = 57545
@@ -35,21 +37,6 @@ def accept_connection(server_socket):
 
 
 # Handshake
-
-
-# Key Derivation
-def derive_keys(salt, shared_secret):
-
-    print("Generating Session_keys....")
-    s2ce = crypto.derive_session_key(salt, shared_secret, info.server_to_client_encr)
-    c2se = crypto.derive_session_key(salt, shared_secret, info.client_to_server_encr)
-
-    s2cm = crypto.derive_session_key(salt, shared_secret, info.server_to_client_mac)
-    c2sm = crypto.derive_session_key(salt, shared_secret, info.client_to_server_mac)
-
-    return s2ce, c2se, s2cm, c2sm
-
-
 def establish_handshake(client_conn, stop_event):
     print("Generating ECDH Keys.......")
     my_private_key = crypto.generate_private_key()
@@ -61,13 +48,13 @@ def establish_handshake(client_conn, stop_event):
 
     if frame is None:
         stop_event.set()
-        return False
+        return False, None, None
 
     frame_type, peer_public_key_bytes = frame
 
     if frame_type != FrameType.HANDSHAKE:
         stop_event.set()
-        return False
+        return False, None, None
     peer_public_key = crypto.deserialize_key(peer_public_key_bytes)
 
     print("Sending DH public key......")
@@ -80,17 +67,17 @@ def establish_handshake(client_conn, stop_event):
 
     if frame is None:
         stop_event.set()
-        return False
+        return False, None, None
 
     frame_type, salt = frame
 
     if frame_type != FrameType.HANDSHAKE or len(salt) != 32:
         stop_event.set()
-        return False
+        return False, None, None
 
     print("Salt Received.")
 
-    S2C_ENC_KEY, C2S_ENC_KEY, S2C_MAC_KEY, C2S_MAC_KEY = derive_keys(
+    S2C_ENC_KEY, C2S_ENC_KEY, S2C_MAC_KEY, C2S_MAC_KEY = crypto.derive_keys(
         salt, shared_secret
     )
 
@@ -102,7 +89,7 @@ def establish_handshake(client_conn, stop_event):
 
     if frame is None:
         stop_event.set()
-        return False
+        return False, None, None
 
     frame_type, received_hmac_C2S = frame
 
@@ -120,11 +107,12 @@ def establish_handshake(client_conn, stop_event):
         send_frame(client_conn, FrameType.QUIT, b"/quit")
         stop_event.set()
 
-    return not stop_event.is_set()
+    return not stop_event.is_set(), S2C_ENC_KEY, C2S_ENC_KEY
 
 
 # Logic for Receiving Messages
-def receive_messages(client_conn, stop_event):
+def receive_messages(client_conn, Key, stop_event):
+    expected_recv_seq = 0
     while not stop_event.is_set():
         try:
             frame = receive_frame(client_conn)
@@ -134,14 +122,51 @@ def receive_messages(client_conn, stop_event):
                 stop_event.set()
                 break
 
-            frame_type, message = frame
+            frame_type, received_payload = frame
 
-            if frame_type == FrameType.QUIT:
+            # received_payload = Seq_No || Nonce || Cipher_text || Auth Tag
+
+            if frame_type == FrameType.CHAT:
+                # 8(sequence no) + 12(Nonce) + 16(Auth tag)
+                if len(received_payload) < 8 + 12 + 16:
+                    print("Invalid encrypted message")
+                    print("Aborting Connection.....")
+                    stop_event.set()
+                    break
+
+                received_seq = struct.unpack("!Q", received_payload[:8])[0]
+
+                # Replay attack found since expected seq and received seq doesnt match
+                if received_seq != expected_recv_seq:
+                    print("Replay or reordered message detected")
+                    print("Aborting Connection.....")
+                    stop_event.set()
+                    break
+
+                try:
+                    # aad = Type + received_seq
+                    aad = struct.pack("!BQ", int(FrameType.CHAT), received_seq)
+                    plain_text = crypto.decrypt_message(Key, received_payload[8:], aad)
+                except InvalidTag:
+                    # Something was modified
+                    print("Message authentication Failed")
+                    print("Aborting Connection....")
+                    stop_event.set()
+                    break
+                except ValueError as e:
+                    print(f"Invalid payload: {e}")
+                    print("Aborting Connection....")
+                    stop_event.set()
+                    break
+
+                print(f"Friend: {plain_text.decode('utf-8')}")
+
+                # SEQ_No++ for next msg
+                expected_recv_seq += 1
+            elif frame_type == FrameType.QUIT:
                 print("\nFriend left the chat.")
                 stop_event.set()
                 break
-
-            print(f"Friend: {message.decode('utf-8')}")
 
         except (ConnectionResetError, BrokenPipeError, OSError):
             stop_event.set()
@@ -154,7 +179,8 @@ def receive_messages(client_conn, stop_event):
 
 
 # Logic for Sending messages
-def send_messages(client_conn, stop_event):
+def send_messages(client_conn, Key, stop_event):
+    send_seq = 0
     while not stop_event.is_set():
         try:
             message = input()
@@ -173,8 +199,16 @@ def send_messages(client_conn, stop_event):
 
                 break
 
-            send_frame(client_conn, FrameType.CHAT, message.encode("utf-8"))
+            plain_text = message.encode("utf-8")
+            # data that needs to be authenticated but not encrypted
+            aad = struct.pack("!BQ", int(FrameType.CHAT), send_seq)
+            # encrypted_msg = nonce + cipherText + auth tag
+            encrypted_msg = crypto.encrypt_message(Key, plain_text, aad)
+            # total payload = sequence_no(to prevent replay attacks) + nonce + cipherText + auth tag
+            payload = struct.pack("!Q", send_seq) + encrypted_msg
+            send_frame(client_conn, FrameType.CHAT, payload)
 
+            send_seq += 1
         # handle Ctrl  + C and EOF error
         except (EOFError, KeyboardInterrupt):
             stop_event.set()
@@ -208,7 +242,9 @@ def main():
 
         # Establish Same Secret Key
         try:
-            status = establish_handshake(client_conn, stop_event)
+            status, S2C_enc_key, C2S_enc_key = establish_handshake(
+                client_conn, stop_event
+            )
         except:
             print("Error in confirming valid Handshake...")
             print("Aborting Connection.....")
@@ -223,12 +259,14 @@ def main():
 
         # Receive thread for parallel execution of send(main thread) and receive
         receive_thread = threading.Thread(
-            target=receive_messages, args=(client_conn, stop_event), daemon=True
+            target=receive_messages,
+            args=(client_conn, C2S_enc_key, stop_event),
+            daemon=True,
         )  # daemon = True basically stops this thread if main thread is stopped
 
         receive_thread.start()
 
-        send_messages(client_conn, stop_event)
+        send_messages(client_conn, S2C_enc_key, stop_event)
 
         stop_event.set()
 
