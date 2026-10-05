@@ -301,13 +301,8 @@ The next major extension would be Level 7, where multiple clients communicate th
 
 # 14. Demonstrations
 
-### Intermediate Demonstrations
-Screen recordings showing TCP communication, framing, ECDH, handshake, encryption, and final chat.
+-[Watch the Demo Video on Google Drive](https://drive.google.com/drive/folders/1cEa0isnaPPdTwJH6sSNUkVrjMZzB3RjC?usp=sharing)
 
-### Final Demonstration
-Final 1-to-1 secure chat demonstration:
-
-[Google Drive Video Link]
 
 ---
 
