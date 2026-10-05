@@ -1,11 +1,21 @@
+# protocol constants
+
 from enum import IntEnum
 
 
 class FrameType(IntEnum):
-    CHAT = 1
-    HANDSHAKE = 2
-    HANDSHAKE_CONFIRM = 3
+    HANDSHAKE = 1
+    HANDSHAKE_CONFIRM = 2
+    CHAT = 3
     QUIT = 4
+
+
+class Size:
+    FRAME_HEADER_SIZE = 5
+    SEQUENCE_NUMBER_SIZE = 8
+    SALT_SIZE = 32
+    NONCE_SIZE = 12
+    AUTH_TAG_SIZE = 16
 
 
 class info:

@@ -1,3 +1,5 @@
+# Cryptographic operations
+
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization
 import os
@@ -5,16 +7,11 @@ import os
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF, HKDFExpand
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.exceptions import InvalidTag
 import hmac as std_hmac
-
-from protocol import info
+from protocol import Size, info
 
 # A curve G y^2 = x^3 + ax + b
 CURVE = ec.SECP256R1()
-
-# nonce - 12 bytes
-NONCE_SIZE = 12
 
 
 # Salt for HMAC(salt, IKM)
@@ -38,9 +35,8 @@ def generate_public_key(private_key):
 
 # Get Shared Secret Key (abG) in bytes
 def derive_shared_secret(private_key, peer_public_key):
-    shared_secret = private_key.exchange(
-        ec.ECDH(), peer_public_key
-    )  # shared_secret is in bytes
+    # shared_secret is in bytes
+    shared_secret = private_key.exchange(ec.ECDH(), peer_public_key)
 
     return shared_secret
 
@@ -66,17 +62,17 @@ def derive_session_key(salt, shared_secret, info):
 
     # HKDF-Expansion Phase
     # Get Session key from prk, info, OKM = T(1)T(2).... where T(i) =  HMAC(PRK, T(i-1)||info|| i)
-    hdkf_expand = HKDFExpand(algorithm=hashes.SHA256(), length=32, info=info)
+    hkdf_expand = HKDFExpand(algorithm=hashes.SHA256(), length=32, info=info)
 
-    okm = hdkf_expand.derive(prk)  # okm : Output Keying Material
+    okm = hkdf_expand.derive(prk)  # okm : Output Keying Material
 
     return okm
 
 
 # Function to Compute the HMAC of transcript to send to other side for HANDSHAKE Confirmation
 # Returns HMAC(MAC_KEY, transcript)
-def compute_hmac(MAC_KEY, transcript):
-    h = hmac.HMAC(MAC_KEY, hashes.SHA256())
+def compute_hmac(mac_key, transcript):
+    h = hmac.HMAC(mac_key, hashes.SHA256())
     h.update(transcript)
     mac_bytes = h.finalize()
 
@@ -102,26 +98,26 @@ def deserialize_key(data):
 
 
 # Logic for Encrypting Chat messages
-def encrypt_message(KEY, plain_text, aad):
+def encrypt_message(key, plaintext, aad):
 
-    nonce = os.urandom(NONCE_SIZE)
-    aesgcm = AESGCM(KEY)
+    nonce = os.urandom(Size.NONCE_SIZE)
+    aesgcm = AESGCM(key)
 
-    ciphertext_and_tag = aesgcm.encrypt(nonce, plain_text, aad)
+    ciphertext_and_tag = aesgcm.encrypt(nonce, plaintext, aad)
 
     return nonce + ciphertext_and_tag
 
 
 # Logic for Decrypting Chat messages
-def decrypt_message(KEY, encrypted_payload, aad):
-    if (
-        len(encrypted_payload) < NONCE_SIZE + 16
-    ):  # minimum is 12 byte nonce + 16 byte authentication tag
+def decrypt_message(key, encrypted_payload, aad):
+
+    # minimum is 12 byte nonce + 16 byte authentication tag
+    if len(encrypted_payload) < Size.NONCE_SIZE + Size.AUTH_TAG_SIZE:
         raise ValueError("Encrypted Payload is too short")
 
-    nonce = encrypted_payload[:NONCE_SIZE]
-    ciphertext_and_tag = encrypted_payload[NONCE_SIZE:]
+    nonce = encrypted_payload[: Size.NONCE_SIZE]
+    ciphertext_and_tag = encrypted_payload[Size.NONCE_SIZE :]
 
-    aesgcm = AESGCM(KEY)
+    aesgcm = AESGCM(key)
 
     return aesgcm.decrypt(nonce, ciphertext_and_tag, aad)

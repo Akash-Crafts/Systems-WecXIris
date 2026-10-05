@@ -1,5 +1,7 @@
-import socket
+# TCP framing
+
 import struct
+from protocol import Size
 
 
 def send_frame(sock, frame_type, payload_bytes):
@@ -31,7 +33,8 @@ def recv_exact(sock, n):
 
 # logic for receiving the full payload
 def receive_frame(sock):
-    header = recv_exact(sock, 5)  # know the header from the first 5 bytes
+    # know the header from the first 5 bytes
+    header = recv_exact(sock, Size.FRAME_HEADER_SIZE)
 
     if header is None:
         return None
